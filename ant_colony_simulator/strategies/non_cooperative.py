@@ -1,5 +1,5 @@
 from environment import TerrainType, AntPerception, Direction
-from ant import AntAction, AntStrategy, Direction
+from ant import AntAction, AntStrategy
 
 import random
 
@@ -47,6 +47,26 @@ class NonCooperativeStrategy(AntStrategy):
             return Direction.NORTHWEST.value
 
         return Direction.NORTH.value
+    
+    def _direction_to_target(self, dx, dy):
+        if dx == 0 and dy < 0:
+            return Direction.NORTH.value
+        elif dx > 0 and dy < 0:
+            return Direction.NORTHEAST.value
+        elif dx > 0 and dy == 0:
+            return Direction.EAST.value
+        elif dx > 0 and dy > 0:
+            return Direction.SOUTHEAST.value
+        elif dx == 0 and dy > 0:
+            return Direction.SOUTH.value
+        elif dx < 0 and dy > 0:
+            return Direction.SOUTHWEST.value
+        elif dx < 0 and dy == 0:
+            return Direction.WEST.value
+        elif dx < 0 and dy < 0:
+            return Direction.NORTHWEST.value
+        return Direction.NORTH.value
+
         
     def decide_action(self, perception: AntPerception) -> AntAction:
         """Decide an action based on current perception"""
@@ -59,7 +79,8 @@ class NonCooperativeStrategy(AntStrategy):
                 "x": 0,
                 "y": 0,
                 "last_action": None,
-                "last_direction": perception.direction
+                "last_direction": perception.direction,
+                "known_food": []
             }
 
         mem = self.memory[ant_id]
@@ -71,41 +92,69 @@ class NonCooperativeStrategy(AntStrategy):
 
         mem["last_direction"] = perception.direction
 
-        #if ant is on food and not carrying food
-        if not perception.has_food:
-            if perception.visible_cells.get((0, 0)) == TerrainType.FOOD:
-                action = AntAction.PICK_UP_FOOD
-                mem["last_action"] = action
-                return action
+        # Save food positions seen by this ant
+        for (dx, dy), cell_type in perception.visible_cells.items():
+            if cell_type == TerrainType.FOOD:
+                food_pos = (mem["x"] + dx, mem["y"] + dy)
+                if food_pos not in mem["known_food"]:
+                    mem["known_food"].append(food_pos)
 
-        #if has food and is on colony
+        # if has food and is on colony
         if perception.has_food:
             if perception.visible_cells.get((0, 0)) == TerrainType.COLONY:
+                mem["x"] = 0
+                mem["y"] = 0
                 action = AntAction.DROP_FOOD
                 mem["last_action"] = action
                 return action
 
-        #does not have food and sees food
-        if not perception.has_food and perception.can_see_food():
-            food_direction = perception.get_food_direction()
-            if food_direction is not None:
-                action = self.turn_to(perception.direction, food_direction)
+        # if no food and sees food, go toward visible food
+        if not perception.has_food:
+            if perception.visible_cells.get((0, 0)) == TerrainType.FOOD:
+                current_pos = (mem["x"], mem["y"])
+                if current_pos in mem["known_food"]:
+                    mem["known_food"].remove(current_pos)
+
+                action = AntAction.PICK_UP_FOOD
                 mem["last_action"] = action
                 return action
 
-        #has food and sees the colony
+        # if has food and sees colony, go toward visible colony
         if perception.has_food and perception.can_see_colony():
             colony_direction = perception.get_colony_direction()
             if colony_direction is not None:
                 action = self.turn_to(perception.direction, colony_direction)
                 mem["last_action"] = action
                 return action
+
+        # if has food, go back home using memory
         if perception.has_food:
             target_direction = self._direction_to_home(mem["x"], mem["y"])
             action = self.turn_to(perception.direction, target_direction)
             mem["last_action"] = action
             return action
-               
+        
+        # if no food and sees food, go toward visible food
+        if not perception.has_food and perception.can_see_food():
+            food_direction = perception.get_food_direction()
+            if food_direction is not None:
+                action = self.turn_to(perception.direction, food_direction)
+                mem["last_action"] = action
+                return action
+            
+        # if no food but remembers food, go toward remembered food
+        if not perception.has_food and mem["known_food"]:
+            food_x, food_y = mem["known_food"][0]
+
+            dx = food_x - mem["x"]
+            dy = food_y - mem["y"]
+
+            target_direction = self._direction_to_target(dx, dy)
+            action = self.turn_to(perception.direction, target_direction)
+            mem["last_action"] = action
+            return action
+
+        # explore randomly
         action = self._decide_movement(perception)
         mem["last_action"] = action
         return action
