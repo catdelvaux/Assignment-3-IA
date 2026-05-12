@@ -8,6 +8,7 @@ class NonCooperativeStrategy(AntStrategy):
     """
     # TODO: Insert your code here
     """
+
     def __init__(self):
         """Initialize the strategy with last action tracking"""
         self.memory = {}
@@ -71,8 +72,10 @@ class NonCooperativeStrategy(AntStrategy):
         
     def decide_action(self, perception: AntPerception) -> AntAction:
         """Decide an action based on current perception"""
-        ant_id = perception.ant_id
 
+        ant_id = perception.ant_id
+ 
+        # initialize memory for this ant if first time we see it
         if ant_id not in self.memory:
             self.memory[ant_id] = {
                 "x": 0,
@@ -80,37 +83,39 @@ class NonCooperativeStrategy(AntStrategy):
                 "last_action": None,
                 "last_direction": perception.direction,
                 "known_food": [],
-                "path":[],
+                "path": [],
                 "visited": set(),
                 "blocked": set()
             }
-
+ 
         memory = self.memory[ant_id]
-
-        # update position if last move as forward
+ 
+        # update position only if last action was move forward, also check we didn't hit a wall
         if memory["last_action"] == AntAction.MOVE_FORWARD:
             dx, dy = Direction.get_delta(memory["last_direction"])
-
-            memory["x"] += dx
-            memory["y"] += dy
-
-            if not perception.has_food:
-                memory["path"].append(memory["last_direction"])
+            next_position = (memory["x"] + dx, memory["y"] + dy)
+ 
+            if perception.visible_cells.get((0, 0)) != TerrainType.WALL:
+                memory["x"] += dx
+                memory["y"] += dy
+ 
+                # only save path steps while exploring,not while carrying food
+                if not perception.has_food:
+                    memory["path"].append(memory["last_direction"])
             else:
-                if memory["path"]:
-                    memory["path"].pop()
-
+                memory["blocked"].add(next_position)
+ 
         memory["last_direction"] = perception.direction
         memory["visited"].add((memory["x"], memory["y"]))
-
-        #save where the food is
+ 
+        # save food positions seen by this ant
         for (dx, dy), cell_type in perception.visible_cells.items():
             if cell_type == TerrainType.FOOD:
                 food_position = (memory["x"] + dx, memory["y"] + dy)
                 if food_position not in memory["known_food"]:
                     memory["known_food"].append(food_position)
-
-        # if has food and is on colony
+ 
+        # if has food and is on colony, drop it
         if perception.has_food:
             if perception.visible_cells.get((0, 0)) == TerrainType.COLONY:
                 memory["x"] = 0
@@ -119,43 +124,43 @@ class NonCooperativeStrategy(AntStrategy):
                 action = AntAction.DROP_FOOD
                 memory["last_action"] = action
                 return action
-
-        # if no food and sees food, go toward it
+ 
+        # if no food and on food cell, pick it up
         if not perception.has_food:
             if perception.visible_cells.get((0, 0)) == TerrainType.FOOD:
-                current_position = (memory["x"], memory["y"])
-                if current_position in memory["known_food"]:
-                    memory["known_food"].remove(current_position)
-
                 action = AntAction.PICK_UP_FOOD
                 memory["last_action"] = action
                 return action
-
-        # if has food and sees colony, go toward colony
+ 
+        # if has food and sees colony, go toward it
         if perception.has_food and perception.can_see_colony():
             colony_direction = perception.get_colony_direction()
             if colony_direction is not None:
                 action = self.turn_to(perception.direction, colony_direction)
                 memory["last_action"] = action
                 return action
-
-       # if has food, go back by reversing the path
+ 
+        # if has food, retrace path back home step by step, pop() only when actually moving forward to avoid skipping steps
         if perception.has_food and memory["path"]:
             last_direction = memory["path"][-1]
             target_direction = self.opposite_direction(last_direction)
-
+ 
             action = self.turn_to(perception.direction, target_direction)
-
+ 
+            if action == AntAction.MOVE_FORWARD:
+                memory["path"].pop()
+ 
             memory["last_action"] = action
             return action
-
-        # if path is empty, use approximate home direction
+ 
+        # if path is empty, use approximate home direction from position
         if perception.has_food:
             target_direction = self.direction_to_home(memory["x"], memory["y"])
             action = self.turn_to(perception.direction, target_direction)
             memory["last_action"] = action
             return action
-        # if no food and sees food, go toward food
+ 
+        # if no food and sees food,go toward visible food
         if not perception.has_food and perception.can_see_food():
             food_direction = perception.get_food_direction()
             if food_direction is not None:
@@ -163,19 +168,19 @@ class NonCooperativeStrategy(AntStrategy):
                 memory["last_action"] = action
                 return action
             
-        # if no food but remembers food, go toward remembered food
+        # if no food but remembers food location,go there directly
         if not perception.has_food and memory["known_food"]:
             food_x, food_y = memory["known_food"][0]
-
+ 
             dx = food_x - memory["x"]
             dy = food_y - memory["y"]
-
+ 
             target_direction = self.direction_to_target(dx, dy)
             action = self.turn_to(perception.direction, target_direction)
             memory["last_action"] = action
             return action
-
-        # continue exploration
+ 
+        #explore randomly
         action = self._decide_movement(perception)
         memory["last_action"] = action
         return action
@@ -183,35 +188,31 @@ class NonCooperativeStrategy(AntStrategy):
     def _decide_movement(self, perception: AntPerception) -> AntAction:
         """Decide which direction to move based on current state"""
         ant_id = perception.ant_id
-        memory = self.memory[ant_id]
+        mem = self.memory[ant_id]
 
-        current_direction = perception.direction
-        forward_dx, forward_dy = Direction.get_delta(current_direction)
-        forward_position = (memory["x"] + forward_dx, memory["y"] + forward_dy)
+        current_dir = perception.direction
+        forward_dx, forward_dy = Direction.get_delta(current_dir)
+        forward_pos = (mem["x"] + forward_dx, mem["y"] + forward_dy)
 
-        if perception.visible_cells.get((forward_dx, forward_dy)) == TerrainType.WALL:
-            memory["blocked"].add(forward_position)
+        # if the cell in front is known as blocked, turn instead of moving
+        if forward_pos in mem["blocked"]:
             return random.choice([AntAction.TURN_LEFT, AntAction.TURN_RIGHT])
 
-        # if cell in front blocked, turn
-        if forward_position in memory["blocked"]:
-            return random.choice([AntAction.TURN_LEFT, AntAction.TURN_RIGHT])
-
-       # avoid going too often to already visited positions
-        if forward_position in memory["visited"]:
+        # avoid going too often to already visited positions
+        if forward_pos in mem["visited"]:
             r = random.random()
-            if r < 0.40:
+            if r < 0.45:
                 return AntAction.MOVE_FORWARD
-            elif r < 0.70:
+            elif r < 0.725:
                 return AntAction.TURN_LEFT
             else:
                 return AntAction.TURN_RIGHT
 
         # if forward position seems new, prefer moving forward
         r = random.random()
-        if r < 0.65:
+        if r < 0.8:
             return AntAction.MOVE_FORWARD
-        elif r < 0.825:
+        elif r < 0.9:
             return AntAction.TURN_LEFT
         else:
             return AntAction.TURN_RIGHT
