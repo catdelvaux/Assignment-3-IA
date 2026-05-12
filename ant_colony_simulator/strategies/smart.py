@@ -14,7 +14,7 @@ RECRUIT_RADIUS = 20
 
 # Number of steps the ants are obliged to follow a certain direction.
 # By sending them in different directions at the beginning will help me have more coverage.
-SCOUT_STEPS = 200
+SCOUT_STEPS = 100
 
 
 class SmartStrategy(AntStrategy):
@@ -32,10 +32,10 @@ class SmartStrategy(AntStrategy):
 
     # Send ants in evenly spaced directions based on total ant count.
     # Returns an exact angle in degrees so ants truly spread across the map.
-    def _assign_scout_dir(self) -> int:
-        d = self._next_scout_dir % 8
+    def _assign_scout_dir(self, total_ants: int = 8) -> float:
+        index = self._next_scout_dir
         self._next_scout_dir += 1
-        return d
+        return (index / total_ants) * 360.0
 
 
     #Tells other ants that a food has been found at a certain position
@@ -78,7 +78,7 @@ class SmartStrategy(AntStrategy):
                 "stuck_turns": 0,
                 # Assigned at first call — direction spread evenly across all ants
                 # Use ant_id as a proxy for total count (ids are sequential from 1)
-                "scout_dir": self._assign_scout_dir(),
+                "scout_dir": self._assign_scout_dir(max(ant_id, 8)),
             }
 
         mem = self.memory[ant_id]
@@ -173,10 +173,7 @@ class SmartStrategy(AntStrategy):
                 chosen = phero_dir
             elif home_blocked:
                 # Wall ahead and no pheromone trail yet: slide along wall toward home
-                # Only escape if truly stuck (not just briefly blocked during a turn)
-                if mem["stuck_turns"] >= 1:
-                    return self._commit(mem, perception, self._escape(perception, mem))
-                chosen = home_dir
+                return self._commit(mem, perception, self._escape(perception, mem))
             else:
                 chosen = home_dir
 
@@ -189,23 +186,28 @@ class SmartStrategy(AntStrategy):
         if mem["step"] % 2 == 0:
             return self._commit(mem, perception, AntAction.DEPOSIT_HOME_PHEROMONE)
 
-        # SCOUT PHASE: head toward assigned angle.
-        # Stop scouting permanently the moment a wall or empty cell is encountered.
+        # SCOUT PHASE: head toward assigned angle, picking the closest free octant.
+        # If every candidate direction is blocked (wall or empty), permanently disable scouting.
         if mem["step"] <= mem.get("scout_steps_override", SCOUT_STEPS):
+            #Convert the exact scout angle to the nearest available octant
             target_octant = int((mem["scout_dir"] + 22.5) // 45) % 8
-            cdx, cdy = Direction.get_delta(Direction(target_octant))
-            cpos = (mem["x"] + cdx, mem["y"] + cdy)
-            cell = perception.visible_cells.get((cdx, cdy))
-            scout_clear = (
-                cell is not None
-                and cell != TerrainType.WALL
-                and cpos not in mem["blocked"]
-            )
-            if scout_clear:
-                action = self._turn_to(perception.direction, target_octant)
+            # Try target octant first, then neighbours, until a free one is found
+            chosen_dir = None
+            for offset in [0, 1, -1, 2, -2, 3, -3, 4]:
+                candidate = (target_octant + offset) % 8
+                cdx, cdy = Direction.get_delta(Direction(candidate))
+                cpos = (mem["x"] + cdx, mem["y"] + cdy)
+                cell = perception.visible_cells.get((cdx, cdy))
+                if (cell is not None
+                        and cell != TerrainType.WALL
+                        and cpos not in mem["blocked"]):
+                    chosen_dir = candidate
+                    break
+            if chosen_dir is not None:
+                action = self._turn_to(perception.direction, chosen_dir)
                 return self._commit(mem, perception, action)
             else:
-                # Hit a wall or empty cell: stop scouting permanently for this ant
+                # All directions around scout angle blocked (empty or wall): stop scouting permanently
                 mem["scout_steps_override"] = 0
 
         #Exploration after scouting (at the beginning)
@@ -272,13 +274,9 @@ class SmartStrategy(AntStrategy):
                 return AntAction.TURN_RIGHT
 
         return random.choice([AntAction.MOVE_FORWARD, AntAction.TURN_LEFT, AntAction.TURN_RIGHT])
-
+    
+    #Scan 8 directions and pick the best unblocked one.
     def _escape(self, perception: AntPerception, mem: dict) -> AntAction:
-        """
-        Scan all 8 directions and pick the best unblocked one.
-        - Carrying food: slide along wall toward home using dot product scoring.
-        - Exploring: pick direction with most unvisited cells ahead.
-        """
         current = perception.direction
         free_dirs = []
 
@@ -294,24 +292,14 @@ class SmartStrategy(AntStrategy):
             return random.choice([AntAction.TURN_LEFT, AntAction.TURN_RIGHT])
 
         if perception.has_food:
-            # Slide along wall toward home.
-            # Score each free direction by:
-            #   1. Dot product with home vector (progress toward home)
-            #   2. Bonus if the cells ahead are not visited (likely a gap)
+            # Slide along wall toward home using dot product:
+            # picks the free direction that makes the most progress toward home
             home_dir = self._vec_to_dir(-mem["x"], -mem["y"])
             hdx, hdy = Direction.get_delta(Direction(home_dir))
 
             def home_slide_score(d):
                 ddx, ddy = Direction.get_delta(d)
-                # Base: progress toward home
-                dot = ddx * hdx + ddy * hdy
-                # Bonus: unvisited cells ahead suggest a gap or new passage
-                gap_bonus = 0
-                for step in range(1, 4):
-                    npos = (mem["x"] + ddx * step, mem["y"] + ddy * step)
-                    if npos not in mem["visited"]:
-                        gap_bonus += 1
-                return dot + gap_bonus * 0.5
+                return ddx * hdx + ddy * hdy
 
             best = max(free_dirs, key=home_slide_score)
         else:
@@ -367,7 +355,7 @@ class SmartStrategy(AntStrategy):
         ax, ay = mem["x"], mem["y"]
         return min(mem["known_food"],
                    key=lambda p: (p[0] - ax) ** 2 + (p[1] - ay) ** 2)
-
+    # Save the chosen action and current direction for use in the next step, then return it
     @staticmethod
     def _commit(mem: dict, perception: AntPerception, action: AntAction) -> AntAction:
         mem["last_action"] = action
