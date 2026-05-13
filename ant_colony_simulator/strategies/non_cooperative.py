@@ -188,18 +188,18 @@ class NonCooperativeStrategy(AntStrategy):
     def _decide_movement(self, perception: AntPerception) -> AntAction:
         """Decide which direction to move based on current state"""
         ant_id = perception.ant_id
-        mem = self.memory[ant_id]
+        memory = self.memory[ant_id]
 
-        current_dir = perception.direction
-        forward_dx, forward_dy = Direction.get_delta(current_dir)
-        forward_pos = (mem["x"] + forward_dx, mem["y"] + forward_dy)
+        current_direction = perception.direction
+        forward_dx, forward_dy = Direction.get_delta(current_direction)
+        forward_position = (memory["x"] + forward_dx, memory["y"] + forward_dy)
 
         # if the cell in front is known as blocked, turn instead of moving
-        if forward_pos in mem["blocked"]:
+        if forward_position in memory["blocked"]:
             return random.choice([AntAction.TURN_LEFT, AntAction.TURN_RIGHT])
 
         # avoid going too often to already visited positions
-        if forward_pos in mem["visited"]:
+        if forward_position in memory["visited"]:
             r = random.random()
             if r < 0.45:
                 return AntAction.MOVE_FORWARD
